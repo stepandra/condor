@@ -187,6 +187,18 @@ servers:
     enabled: true
 ```
 
+### Docker auto-config (optional)
+If `/app/servers.yml` is missing, the Docker entrypoint can generate it from env:
+```bash
+HBOT_API_HOST=api.your-domain.com
+HBOT_API_PORT=8001
+HBOT_API_USERNAME=admin
+HBOT_API_PASSWORD=your-api-password
+# Optional: override scheme field (host can also include https://)
+HBOT_API_SCHEME=https
+```
+Set `CONDOR_CONFIG_PATH` to write the config somewhere else and symlink it to `/app/servers.yml`.
+
 ## Troubleshooting
 
 | Issue | Solution |

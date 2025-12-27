@@ -39,8 +39,12 @@ RUN python -c "import kaleido; kaleido.get_chrome_sync()" || true
 # Copy application code
 COPY . .
 
+# Make entrypoint executable
+RUN chmod +x /app/entrypoint.sh
+
 # Create volume mount point for persistence
 VOLUME ["/app/data"]
 
-# Run the bot
+# Run the bot (entrypoint can generate servers.yml from env)
+ENTRYPOINT ["/app/entrypoint.sh"]
 CMD ["python", "main.py"]
