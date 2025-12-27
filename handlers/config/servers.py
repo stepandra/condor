@@ -85,7 +85,7 @@ async def show_api_servers(query, context: ContextTypes.DEFAULT_TYPE) -> None:
                 # Default server indicator
                 default_indicator = " ⭐️" if server_name == default_server else ""
 
-                url = f"{server_config['host']}:{server_config['port']}"
+                url = server_manager.build_base_url(server_config)
                 url_escaped = escape_markdown_v2(url)
                 name_escaped = escape_markdown_v2(server_name)
 

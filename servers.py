@@ -80,6 +80,40 @@ class ServerManager:
             logger.error(f"Failed to save config: {e}")
             raise
 
+    def _build_base_url(self, server: dict) -> str:
+        """Build base URL with optional scheme support."""
+        host = server.get('host', '')
+        scheme = server.get('scheme')
+
+        if host.startswith('http://'):
+            scheme = scheme or 'http'
+            host = host[len('http://'):]
+        elif host.startswith('https://'):
+            scheme = scheme or 'https'
+            host = host[len('https://'):]
+
+        if not scheme:
+            scheme = 'http'
+
+        port = server.get('port')
+        if not port:
+            netloc = host
+        else:
+            host_has_port = False
+            if host.startswith('['):
+                host_has_port = ']' in host and host.split(']')[-1].startswith(':')
+            else:
+                parts = host.rsplit(':', 1)
+                if len(parts) == 2 and parts[1].isdigit():
+                    host_has_port = True
+            netloc = host if host_has_port else f"{host}:{port}"
+
+        return f"{scheme}://{netloc}"
+
+    def build_base_url(self, server: dict) -> str:
+        """Public helper for displaying or using a server base URL."""
+        return self._build_base_url(server)
+
     def add_server(self, name: str, host: str, port: int, username: str,
                    password: str) -> bool:
         """Add a new server to configuration"""
@@ -218,7 +252,7 @@ class ServerManager:
             return {"status": "error", "message": "Server not found"}
 
         server = self.servers[name]
-        base_url = f"http://{server['host']}:{server['port']}"
+        base_url = self._build_base_url(server)
 
         logger.debug(f"Checking status for '{name}' at {base_url} with username '{server['username']}'")
 
@@ -301,7 +335,7 @@ class ServerManager:
 
         # Create new client with longer timeout to handle slow operations
         # (credential verification can take time as it connects to external exchanges)
-        base_url = f"http://{server['host']}:{server['port']}"
+        base_url = self._build_base_url(server)
         client = HummingbotAPIClient(
             base_url=base_url,
             username=server['username'],
