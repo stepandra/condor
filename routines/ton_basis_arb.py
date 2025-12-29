@@ -14,7 +14,7 @@ class Config(BaseModel):
     dex_connector: str = Field(default="dedust", description="Gateway DEX connector")
     dex_network: str = Field(default="mainnet", description="Gateway network")
     dex_trading_pair: str = Field(default="TON-USDT", description="DEX trading pair")
-    cex_connector: str = Field(default="hyperliquid", description="CEX connector")
+    cex_connector: str = Field(default="hyperliquid_perpetual", description="CEX connector")
     cex_trading_pair: str = Field(default="TON-USD", description="CEX trading pair")
     slippage_pct: float = Field(default=1.0, description="Slippage for DEX quotes")
 
@@ -69,10 +69,10 @@ async def run(config: Config, context: ContextTypes.DEFAULT_TYPE) -> str:
 
     # --- CEX Quotes (Hyperliquid) ---
     try:
-        async def get_cex_quote(is_buy: bool):
+        async def get_cex_quote(is_buy: bool, trading_pair: str):
             result = await client.market_data.get_price_for_volume(
                 connector_name=config.cex_connector,
-                trading_pair=config.cex_trading_pair,
+                trading_pair=trading_pair,
                 volume=config.amount,
                 is_buy=is_buy,
             )
@@ -86,11 +86,28 @@ async def run(config: Config, context: ContextTypes.DEFAULT_TYPE) -> str:
 
         import asyncio
         cex_buy, cex_sell = await asyncio.gather(
-            get_cex_quote(True),
-            get_cex_quote(False),
+            get_cex_quote(True, config.cex_trading_pair),
+            get_cex_quote(False, config.cex_trading_pair),
         )
     except Exception as e:
         results.append(f"CEX Error: {str(e)}")
+
+        # Try to find a valid TON pair from connector trading rules
+        try:
+            rules = await client.connectors.get_trading_rules(connector_name=config.cex_connector)
+            ton_pairs = [p for p in rules.keys() if p.upper().startswith("TON-")] if isinstance(rules, dict) else []
+            if ton_pairs:
+                fallback_pair = ton_pairs[0]
+                if fallback_pair != config.cex_trading_pair:
+                    cex_buy, cex_sell = await asyncio.gather(
+                        get_cex_quote(True, fallback_pair),
+                        get_cex_quote(False, fallback_pair),
+                    )
+                    results.append(f"CEX pair fallback: {fallback_pair}")
+            else:
+                results.append("CEX: No TON pairs in trading rules")
+        except Exception:
+            pass
 
     # Display quotes
     if dex_buy:
