@@ -23,6 +23,14 @@ def _is_ton_pair(trading_pair: str) -> bool:
     return trading_pair.upper().startswith("TON-")
 
 
+def _normalize_dex_price(side: str, price: float) -> float | None:
+    if price is None:
+        return None
+    if price <= 0:
+        return None
+    return (1 / price) if side.upper() == "BUY" else price
+
+
 async def run(config: Config, context: ContextTypes.DEFAULT_TYPE) -> str:
     """Check TON basis: buy spot on DeDust, short on Hyperliquid."""
     chat_id = context._chat_id if hasattr(context, "_chat_id") else None
@@ -110,10 +118,13 @@ async def run(config: Config, context: ContextTypes.DEFAULT_TYPE) -> str:
             pass
 
     # Display quotes
-    if dex_buy:
-        results.append(f"DEX BUY:  {float(dex_buy):.6f}")
-    if dex_sell:
-        results.append(f"DEX SELL: {float(dex_sell):.6f}")
+    dex_buy_n = _normalize_dex_price("BUY", float(dex_buy)) if dex_buy else None
+    dex_sell_n = _normalize_dex_price("SELL", float(dex_sell)) if dex_sell else None
+
+    if dex_buy_n:
+        results.append(f"DEX BUY:  {dex_buy_n:.6f}")
+    if dex_sell_n:
+        results.append(f"DEX SELL: {dex_sell_n:.6f}")
     if cex_buy:
         results.append(f"CEX BUY:  {float(cex_buy):.6f}")
     if cex_sell:
@@ -131,8 +142,8 @@ async def run(config: Config, context: ContextTypes.DEFAULT_TYPE) -> str:
     opportunities = []
 
     # Buy spot on DeDust, short on Hyperliquid
-    if dex_buy and cex_sell:
-        dex_buy_f = float(dex_buy)
+    if dex_buy_n and cex_sell:
+        dex_buy_f = dex_buy_n
         cex_sell_f = float(cex_sell)
         spread_pct = ((cex_sell_f - dex_buy_f) / dex_buy_f) * 100
         basis = cex_sell_f - dex_buy_f
@@ -144,8 +155,8 @@ async def run(config: Config, context: ContextTypes.DEFAULT_TYPE) -> str:
             results.append(f"LONG DEX / SHORT CEX: {spread_pct:.2f}%")
 
     # Reverse: sell spot, buy back short
-    if dex_sell and cex_buy:
-        dex_sell_f = float(dex_sell)
+    if dex_sell_n and cex_buy:
+        dex_sell_f = dex_sell_n
         cex_buy_f = float(cex_buy)
         spread_pct = ((dex_sell_f - cex_buy_f) / cex_buy_f) * 100
         basis = dex_sell_f - cex_buy_f
