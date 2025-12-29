@@ -1,5 +1,3 @@
-"""Check TON basis between DeDust spot and Hyperliquid perp."""
-
 from decimal import Decimal
 from pydantic import BaseModel, Field
 from telegram.ext import ContextTypes
@@ -8,7 +6,6 @@ from servers import get_client
 
 
 class Config(BaseModel):
-    """TON basis check: buy on DeDust, short on Hyperliquid."""
 
     amount: float = Field(default=1.0, description="Base amount in TON to quote")
     dex_connector: str = Field(default="dedust", description="Gateway DEX connector")
@@ -49,7 +46,6 @@ async def run(config: Config, context: ContextTypes.DEFAULT_TYPE) -> str:
     cex_buy = None
     cex_sell = None
 
-    # --- DEX Quotes (DeDust) ---
     try:
         if hasattr(client, "gateway_swap"):
             async def get_dex_quote(side: str):
@@ -75,7 +71,6 @@ async def run(config: Config, context: ContextTypes.DEFAULT_TYPE) -> str:
     except Exception as e:
         results.append(f"DEX Error: {str(e)}")
 
-    # --- CEX Quotes (Hyperliquid) ---
     try:
         async def get_cex_quote(is_buy: bool, trading_pair: str):
             result = await client.market_data.get_price_for_volume(
@@ -100,7 +95,6 @@ async def run(config: Config, context: ContextTypes.DEFAULT_TYPE) -> str:
     except Exception as e:
         results.append(f"CEX Error: {str(e)}")
 
-        # Try to find a valid TON pair from connector trading rules
         try:
             rules = await client.connectors.get_trading_rules(connector_name=config.cex_connector)
             ton_pairs = [p for p in rules.keys() if p.upper().startswith("TON-")] if isinstance(rules, dict) else []
@@ -117,7 +111,6 @@ async def run(config: Config, context: ContextTypes.DEFAULT_TYPE) -> str:
         except Exception:
             pass
 
-    # Display quotes
     dex_buy_n = _normalize_dex_price("BUY", float(dex_buy)) if dex_buy else None
     dex_sell_n = _normalize_dex_price("SELL", float(dex_sell)) if dex_sell else None
 
@@ -135,13 +128,11 @@ async def run(config: Config, context: ContextTypes.DEFAULT_TYPE) -> str:
     if not cex_buy and not cex_sell:
         results.append("CEX: No quotes")
 
-    # --- Basis Analysis ---
     results.append("")
     results.append("--- Basis ---")
 
     opportunities = []
 
-    # Buy spot on DeDust, short on Hyperliquid
     if dex_buy_n and cex_sell:
         dex_buy_f = dex_buy_n
         cex_sell_f = float(cex_sell)
