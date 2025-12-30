@@ -3596,7 +3596,7 @@ async def handle_edit_config(update: Update, context: ContextTypes.DEFAULT_TYPE,
 # ============================================
 
 # Default deploy settings
-DEFAULT_HBOT_IMAGE = "stepandra/hummingbot-core:latest"
+DEFAULT_HBOT_IMAGE = "stepandra/hummingbot-dex-perps:latest"
 
 
 # Default deploy settings
@@ -4117,7 +4117,7 @@ async def handle_deploy_set_field(update: Update, context: ContextTypes.DEFAULT_
         "credentials_profile": "e.g. binance_main",
         "max_global_drawdown_quote": "e.g. 1000 (in USDT)",
         "max_controller_drawdown_quote": "e.g. 500 (in USDT)",
-        "image": "e.g. stepandra/hummingbot-core:latest",
+        "image": "e.g. stepandra/hummingbot-dex-perps:latest",
     }
 
     label = labels.get(field_name, field_name)
