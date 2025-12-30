@@ -340,7 +340,8 @@ class ServerManager:
             base_url=base_url,
             username=server['username'],
             password=server['password'],
-            timeout=ClientTimeout(total=60, connect=10)
+            # Allow longer ops like image pulls/container creation
+            timeout=ClientTimeout(total=180, connect=15)
         )
 
         try:
