@@ -323,6 +323,45 @@ async def get_available_cex_connectors(
 
 
 # ============================================
+# GATEWAY CONNECTOR HELPERS
+# ============================================
+
+async def fetch_available_gateway_connectors(client) -> List[str]:
+    """Fetch list of available Gateway connectors."""
+    try:
+        response = await client.gateway.list_connectors()
+        connectors = response.get("connectors", []) if response else []
+        names = []
+        for connector in connectors:
+            if isinstance(connector, dict):
+                name = connector.get("name") or connector.get("connector_name")
+            else:
+                name = str(connector)
+            if name:
+                names.append(name)
+        return names
+    except Exception as e:
+        logger.error(f"Error fetching gateway connectors: {e}", exc_info=True)
+        return []
+
+
+async def get_available_gateway_connectors(
+    user_data: dict,
+    client,
+    ttl: int = 300
+) -> List[str]:
+    """Get available Gateway connectors with caching."""
+    cache_key = "available_gateway_connectors"
+    return await cached_call(
+        user_data,
+        cache_key,
+        fetch_available_gateway_connectors,
+        ttl,
+        client,
+    )
+
+
+# ============================================
 # MARKET DATA HELPERS
 # ============================================
 

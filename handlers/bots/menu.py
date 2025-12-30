@@ -7,6 +7,7 @@ Provides:
 - Bot detail view with controllers, logs, and actions
 - Stop/edit controller functionality
 - Navigation helpers
+- Controller config entry points (grid strike, PMM, basis trade)
 """
 
 import logging
@@ -49,6 +50,9 @@ def _build_main_menu_keyboard(bots_dict: Dict[str, Any]) -> InlineKeyboardMarkup
     keyboard.append([
         InlineKeyboardButton("➕ Grid Strike", callback_data="bots:new_grid_strike"),
         InlineKeyboardButton("➕ PMM Mister", callback_data="bots:new_pmm_mister"),
+    ])
+    keyboard.append([
+        InlineKeyboardButton("➕ Basis Trade", callback_data="bots:new_basis_trade"),
     ])
 
     # Action buttons - configs and historical

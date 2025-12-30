@@ -68,6 +68,7 @@ from .controller_handlers import (
     handle_cfg_edit_cancel,
     show_new_grid_strike_form,
     show_new_pmm_mister_form,
+    show_new_basis_trade_form,
     show_config_form,
     handle_set_field,
     handle_toggle_side,
@@ -143,6 +144,16 @@ from .controller_handlers import (
     handle_pmm_edit_advanced,
     handle_pmm_adv_setting,
     process_pmm_wizard_input,
+    # Basis Trade wizard
+    handle_basis_spot_connector,
+    handle_basis_spot_pair,
+    handle_basis_perp_connector,
+    handle_basis_perp_pair,
+    handle_basis_entry,
+    handle_basis_exit,
+    handle_basis_save,
+    handle_basis_review_back,
+    process_basis_wizard_input,
 )
 from ._shared import clear_bots_state, SIDE_LONG, SIDE_SHORT
 
@@ -313,6 +324,9 @@ async def bots_callback_handler(update: Update, context: ContextTypes.DEFAULT_TY
 
         elif main_action == "new_pmm_mister":
             await show_new_pmm_mister_form(update, context)
+
+        elif main_action == "new_basis_trade":
+            await show_new_basis_trade_form(update, context)
 
         elif main_action == "edit_config":
             if len(action_parts) > 1:
@@ -565,6 +579,43 @@ async def bots_callback_handler(update: Update, context: ContextTypes.DEFAULT_TY
                 setting = action_parts[1]
                 await handle_pmm_adv_setting(update, context, setting)
 
+        # Basis Trade wizard
+        elif main_action == "basis_spot_connector":
+            if len(action_parts) > 1:
+                connector = action_parts[1]
+                await handle_basis_spot_connector(update, context, connector)
+
+        elif main_action == "basis_spot_pair":
+            if len(action_parts) > 1:
+                pair = action_parts[1]
+                await handle_basis_spot_pair(update, context, pair)
+
+        elif main_action == "basis_perp_connector":
+            if len(action_parts) > 1:
+                connector = action_parts[1]
+                await handle_basis_perp_connector(update, context, connector)
+
+        elif main_action == "basis_perp_pair":
+            if len(action_parts) > 1:
+                pair = action_parts[1]
+                await handle_basis_perp_pair(update, context, pair)
+
+        elif main_action == "basis_entry":
+            if len(action_parts) > 1:
+                entry_value = float(action_parts[1])
+                await handle_basis_entry(update, context, entry_value)
+
+        elif main_action == "basis_exit":
+            if len(action_parts) > 1:
+                exit_value = float(action_parts[1])
+                await handle_basis_exit(update, context, exit_value)
+
+        elif main_action == "basis_save":
+            await handle_basis_save(update, context)
+
+        elif main_action == "basis_review_back":
+            await handle_basis_review_back(update, context)
+
         # Bot detail
         elif main_action == "bot_detail":
             if len(action_parts) > 1:
@@ -728,6 +779,9 @@ async def bots_message_handler(update: Update, context: ContextTypes.DEFAULT_TYP
         # Handle PMM Mister wizard input
         elif bots_state == "pmm_wizard_input":
             await process_pmm_wizard_input(update, context, user_input)
+        # Handle Basis Trade wizard input
+        elif bots_state == "basis_wizard_input":
+            await process_basis_wizard_input(update, context, user_input)
         # Handle config edit loop field input (legacy single field)
         elif bots_state.startswith("cfg_edit_input:"):
             await process_cfg_edit_input(update, context, user_input)

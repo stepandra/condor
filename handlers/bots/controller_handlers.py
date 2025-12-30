@@ -3,7 +3,7 @@ Controller configuration management
 
 Provides:
 - List existing controller configs
-- Create new controller configs (grid_strike)
+- Create new controller configs (grid_strike, pmm_mister, basis_trade)
 - Interactive form for configuration with:
   - Connector selection via buttons
   - Auto-pricing based on current market price
@@ -30,6 +30,7 @@ from ._shared import (
     format_controller_config_summary,
     format_config_field_value,
     get_available_cex_connectors,
+    get_available_gateway_connectors,
     fetch_current_price,
     fetch_candles,
     calculate_auto_prices,
@@ -79,6 +80,7 @@ def _get_controller_type_display(controller_name: str) -> tuple[str, str]:
         "dman_v3": ("DMan V3", "🤖"),
         "xemm": ("XEMM", "🔄"),
         "pmm": ("PMM", "📈"),
+        "basis": ("Basis Trade", "⚖️"),
     }
     controller_lower = controller_name.lower() if controller_name else ""
     for key, (name, emoji) in type_map.items():
@@ -227,6 +229,8 @@ async def show_controller_configs_menu(update: Update, context: ContextTypes.DEF
         # Create button for current type
         if current_type == "grid_strike":
             type_row.append(InlineKeyboardButton("➕ New", callback_data="bots:new_grid_strike"))
+        elif current_type == "basis_trade":
+            type_row.append(InlineKeyboardButton("➕ New", callback_data="bots:new_basis_trade"))
         elif "pmm" in current_type.lower():
             type_row.append(InlineKeyboardButton("➕ New", callback_data="bots:new_pmm_mister"))
         else:
@@ -301,6 +305,7 @@ async def show_controller_configs_menu(update: Update, context: ContextTypes.DEF
         logger.error(f"Error loading controller configs: {e}", exc_info=True)
         keyboard = [
             [InlineKeyboardButton("➕ Grid Strike", callback_data="bots:new_grid_strike")],
+            [InlineKeyboardButton("➕ Basis Trade", callback_data="bots:new_basis_trade")],
             [InlineKeyboardButton("⬅️ Back", callback_data="bots:main_menu")],
         ]
         error_msg = format_error_message(f"Failed to load configs: {str(e)}")
@@ -564,6 +569,15 @@ def _get_editable_config_fields(config: dict) -> dict:
             "min_spread_between_orders": config.get("min_spread_between_orders", 0.0001),
             "activation_bounds": config.get("activation_bounds", 0.01),
             "take_profit": take_profit,
+        }
+    if "basis_trade" in controller_type:
+        return {
+            "entry_threshold": config.get("entry_threshold", 0),
+            "exit_threshold": config.get("exit_threshold", 0),
+            "tp_multiplier": config.get("tp_multiplier", 2),
+            "leverage": config.get("leverage", 10),
+            "pos_hedge_ratio": config.get("pos_hedge_ratio", 1),
+            "min_amount_quote": config.get("min_amount_quote", 10),
         }
     # Default fields for other controller types
     return {
@@ -4773,6 +4787,10 @@ from .controllers.pmm_mister import (
     parse_spreads,
     format_spreads,
 )
+from .controllers.basis_trade import (
+    validate_config as basis_validate_config,
+    generate_id as basis_generate_id,
+)
 
 
 async def show_new_pmm_mister_form(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -5690,3 +5708,613 @@ async def _pmm_show_advanced(context, chat_id, message_id, config):
         parse_mode="MarkdownV2",
         reply_markup=InlineKeyboardMarkup(keyboard)
     )
+
+
+# ============================================
+# BASIS TRADE WIZARD
+# ============================================
+
+
+def _basis_get_pair(config: dict, key: str) -> dict:
+    pair = config.get(key)
+    if isinstance(pair, dict):
+        return pair
+    config[key] = {}
+    return config[key]
+
+
+def _basis_format_value(value: Any) -> str:
+    if value is None:
+        return "null"
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    return str(value)
+
+
+def _basis_parse_threshold(value: str) -> float:
+    raw = value.strip()
+    is_percent = raw.endswith("%")
+    if is_percent:
+        raw = raw[:-1].strip()
+    val = float(raw)
+    if is_percent or val > 1:
+        return val / 100.0
+    return val
+
+
+def _basis_parse_bool(value: str) -> bool:
+    return value.strip().lower() in {"true", "1", "yes", "y", "on"}
+
+
+async def _basis_edit_message(update: Update, context: ContextTypes.DEFAULT_TYPE,
+                              message_text: str, keyboard: list) -> None:
+    query = update.callback_query if update else None
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    try:
+        if query and query.message:
+            await query.message.edit_text(
+                message_text,
+                parse_mode="MarkdownV2",
+                reply_markup=reply_markup
+            )
+            context.user_data["basis_wizard_message_id"] = query.message.message_id
+            context.user_data["basis_wizard_chat_id"] = query.message.chat_id
+            return
+        chat_id = context.user_data.get("basis_wizard_chat_id")
+        message_id = context.user_data.get("basis_wizard_message_id")
+        if chat_id and message_id:
+            await context.bot.edit_message_text(
+                chat_id=chat_id,
+                message_id=message_id,
+                text=message_text,
+                parse_mode="MarkdownV2",
+                reply_markup=reply_markup
+            )
+            return
+        if update and update.message:
+            msg = await update.message.reply_text(
+                message_text,
+                parse_mode="MarkdownV2",
+                reply_markup=reply_markup
+            )
+            context.user_data["basis_wizard_message_id"] = msg.message_id
+            context.user_data["basis_wizard_chat_id"] = msg.chat_id
+    except BadRequest as e:
+        if "Message is not modified" not in str(e):
+            raise
+
+
+async def show_new_basis_trade_form(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Start the Basis Trade wizard - Step 1: Spot connector"""
+    query = update.callback_query
+    chat_id = update.effective_chat.id
+
+    try:
+        client = await get_bots_client(chat_id)
+        configs = await client.controllers.list_controller_configs()
+        context.user_data["controller_configs_list"] = configs
+    except Exception as e:
+        logger.warning(f"Could not fetch existing configs: {e}")
+
+    init_new_controller_config(context, "basis_trade")
+    context.user_data["bots_state"] = "basis_wizard_input"
+    context.user_data["basis_wizard_step"] = "spot_connector"
+    context.user_data["basis_wizard_message_id"] = query.message.message_id
+    context.user_data["basis_wizard_chat_id"] = query.message.chat_id
+
+    await _show_basis_spot_connector_step(update, context)
+
+
+async def _show_basis_spot_connector_step(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Basis wizard step 1: Select spot connector"""
+    chat_id = update.effective_chat.id
+    config = get_controller_config(context)
+    context.user_data["bots_state"] = "basis_wizard_input"
+    context.user_data["basis_wizard_step"] = "spot_connector"
+
+    connectors: List[str] = []
+    try:
+        client = await get_bots_client(chat_id)
+        connectors = await get_available_gateway_connectors(context.user_data, client)
+    except Exception as e:
+        logger.warning(f"Could not load gateway connectors: {e}")
+
+    connectors = [c for c in connectors if c]
+    if "dedust/router" in connectors:
+        connectors.sort(key=lambda name: (name != "dedust/router", name))
+
+    keyboard = []
+    row = []
+    for connector in connectors[:12]:
+        row.append(InlineKeyboardButton(f"🧩 {connector}", callback_data=f"bots:basis_spot_connector:{connector}"))
+        if len(row) == 2:
+            keyboard.append(row)
+            row = []
+    if row:
+        keyboard.append(row)
+    keyboard.append([InlineKeyboardButton("❌ Cancel", callback_data="bots:main_menu")])
+
+    message_text = (
+        r"*⚖️ Basis Trade \- New Config*" + "\n\n"
+        r"*Step 1/6:* 🧩 Spot Connector" + "\n\n"
+        r"_Select or type a connector name_" + "\n"
+        r"_Example: `dedust/router`_"
+    )
+    await _basis_edit_message(update, context, message_text, keyboard)
+
+
+async def handle_basis_spot_connector(update: Update, context: ContextTypes.DEFAULT_TYPE, connector: str) -> None:
+    """Handle spot connector selection"""
+    config = get_controller_config(context)
+    spot = _basis_get_pair(config, "connector_pair_spot")
+    spot["connector_name"] = connector
+    set_controller_config(context, config)
+    context.user_data["basis_wizard_step"] = "spot_pair"
+    await _show_basis_spot_pair_step(update, context)
+
+
+async def _show_basis_spot_pair_step(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Basis wizard step 2: Spot trading pair"""
+    config = get_controller_config(context)
+    spot = _basis_get_pair(config, "connector_pair_spot")
+    connector = spot.get("connector_name", "")
+    context.user_data["bots_state"] = "basis_wizard_input"
+    context.user_data["basis_wizard_step"] = "spot_pair"
+
+    existing_configs = context.user_data.get("controller_configs_list", [])
+    recent_pairs = []
+    seen = set()
+    for cfg in reversed(existing_configs):
+        pair = cfg.get("connector_pair_spot", {}).get("trading_pair")
+        if pair and pair not in seen:
+            seen.add(pair)
+            recent_pairs.append(pair)
+        if len(recent_pairs) >= 4:
+            break
+
+    defaults = ["TON-USDT", "TON-USD", "TON-USDC"]
+    for pair in defaults:
+        if pair not in seen:
+            recent_pairs.append(pair)
+
+    keyboard = []
+    row = []
+    for pair in recent_pairs:
+        row.append(InlineKeyboardButton(pair, callback_data=f"bots:basis_spot_pair:{pair}"))
+        if len(row) == 2:
+            keyboard.append(row)
+            row = []
+    if row:
+        keyboard.append(row)
+    keyboard.append([InlineKeyboardButton("❌ Cancel", callback_data="bots:main_menu")])
+
+    message_text = (
+        r"*⚖️ Basis Trade \- New Config*" + "\n\n"
+        f"Spot connector: `{escape_markdown_v2(connector)}`" + "\n\n"
+        r"*Step 2/6:* 🔗 Spot Trading Pair" + "\n\n"
+        r"_Select or type a pair \(e\.g\. TON\-USDT\)_"
+    )
+    await _basis_edit_message(update, context, message_text, keyboard)
+
+
+async def handle_basis_spot_pair(update: Update, context: ContextTypes.DEFAULT_TYPE, pair: str) -> None:
+    """Handle spot pair selection"""
+    config = get_controller_config(context)
+    spot = _basis_get_pair(config, "connector_pair_spot")
+    spot["trading_pair"] = pair.upper()
+    set_controller_config(context, config)
+    context.user_data["basis_wizard_step"] = "perp_connector"
+    await _show_basis_perp_connector_step(update, context)
+
+
+async def _show_basis_perp_connector_step(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Basis wizard step 3: Perp connector"""
+    chat_id = update.effective_chat.id
+    config = get_controller_config(context)
+    spot = _basis_get_pair(config, "connector_pair_spot")
+    context.user_data["bots_state"] = "basis_wizard_input"
+    context.user_data["basis_wizard_step"] = "perp_connector"
+
+    connectors: List[str] = []
+    try:
+        client = await get_bots_client(chat_id)
+        connectors = await get_available_cex_connectors(context.user_data, client)
+    except Exception as e:
+        logger.warning(f"Could not load perp connectors: {e}")
+
+    perp_connectors = [c for c in connectors if "_perpetual" in c or "perp" in c]
+    if not perp_connectors:
+        perp_connectors = connectors
+
+    keyboard = []
+    row = []
+    for connector in perp_connectors[:12]:
+        row.append(InlineKeyboardButton(f"🏦 {connector}", callback_data=f"bots:basis_perp_connector:{connector}"))
+        if len(row) == 2:
+            keyboard.append(row)
+            row = []
+    if row:
+        keyboard.append(row)
+    keyboard.append([InlineKeyboardButton("❌ Cancel", callback_data="bots:main_menu")])
+
+    message_text = (
+        r"*⚖️ Basis Trade \- New Config*" + "\n\n"
+        f"Spot: `{escape_markdown_v2(spot.get('connector_name', ''))}` "
+        f"\\| `{escape_markdown_v2(spot.get('trading_pair', ''))}`" + "\n\n"
+        r"*Step 3/6:* 🏦 Perp Connector" + "\n\n"
+        r"_Select or type a connector name_" + "\n"
+        r"_Example: `hyperliquid_perpetual`_"
+    )
+    await _basis_edit_message(update, context, message_text, keyboard)
+
+
+async def handle_basis_perp_connector(update: Update, context: ContextTypes.DEFAULT_TYPE, connector: str) -> None:
+    """Handle perp connector selection"""
+    config = get_controller_config(context)
+    perp = _basis_get_pair(config, "connector_pair_perp")
+    perp["connector_name"] = connector
+    set_controller_config(context, config)
+    context.user_data["basis_wizard_step"] = "perp_pair"
+    await _show_basis_perp_pair_step(update, context)
+
+
+async def _show_basis_perp_pair_step(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Basis wizard step 4: Perp trading pair"""
+    config = get_controller_config(context)
+    spot = _basis_get_pair(config, "connector_pair_spot")
+    perp = _basis_get_pair(config, "connector_pair_perp")
+    context.user_data["bots_state"] = "basis_wizard_input"
+    context.user_data["basis_wizard_step"] = "perp_pair"
+
+    defaults = ["TON-USD", "TON-USDT", "TON-USDC"]
+    keyboard = []
+    row = []
+    for pair in defaults:
+        row.append(InlineKeyboardButton(pair, callback_data=f"bots:basis_perp_pair:{pair}"))
+        if len(row) == 2:
+            keyboard.append(row)
+            row = []
+    if row:
+        keyboard.append(row)
+    keyboard.append([InlineKeyboardButton("❌ Cancel", callback_data="bots:main_menu")])
+
+    message_text = (
+        r"*⚖️ Basis Trade \- New Config*" + "\n\n"
+        f"Spot: `{escape_markdown_v2(spot.get('connector_name', ''))}` "
+        f"\\| `{escape_markdown_v2(spot.get('trading_pair', ''))}`" + "\n"
+        f"Perp: `{escape_markdown_v2(perp.get('connector_name', ''))}`" + "\n\n"
+        r"*Step 4/6:* 🔗 Perp Trading Pair" + "\n\n"
+        r"_Select or type a pair \(e\.g\. TON\-USD\)_"
+    )
+    await _basis_edit_message(update, context, message_text, keyboard)
+
+
+async def handle_basis_perp_pair(update: Update, context: ContextTypes.DEFAULT_TYPE, pair: str) -> None:
+    """Handle perp pair selection"""
+    config = get_controller_config(context)
+    perp = _basis_get_pair(config, "connector_pair_perp")
+    perp["trading_pair"] = pair.upper()
+    set_controller_config(context, config)
+    context.user_data["basis_wizard_step"] = "entry_threshold"
+    await _show_basis_entry_step(update, context)
+
+
+async def _show_basis_entry_step(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Basis wizard step 5: Entry threshold"""
+    config = get_controller_config(context)
+    spot = _basis_get_pair(config, "connector_pair_spot")
+    perp = _basis_get_pair(config, "connector_pair_perp")
+    context.user_data["bots_state"] = "basis_wizard_input"
+    context.user_data["basis_wizard_step"] = "entry_threshold"
+
+    keyboard = [
+        [
+            InlineKeyboardButton("0.5%", callback_data="bots:basis_entry:0.005"),
+            InlineKeyboardButton("1%", callback_data="bots:basis_entry:0.01"),
+            InlineKeyboardButton("2%", callback_data="bots:basis_entry:0.02"),
+        ],
+        [
+            InlineKeyboardButton("3%", callback_data="bots:basis_entry:0.03"),
+            InlineKeyboardButton("5%", callback_data="bots:basis_entry:0.05"),
+        ],
+        [InlineKeyboardButton("❌ Cancel", callback_data="bots:main_menu")],
+    ]
+
+    message_text = (
+        r"*⚖️ Basis Trade \- New Config*" + "\n\n"
+        f"Spot: `{escape_markdown_v2(spot.get('trading_pair', ''))}` "
+        f"\\| Perp: `{escape_markdown_v2(perp.get('trading_pair', ''))}`" + "\n\n"
+        r"*Step 5/6:* 📈 Entry Threshold" + "\n\n"
+        r"_Enter basis threshold as decimal \(e\.g\. 0\.01 for 1%\)_"
+    )
+    await _basis_edit_message(update, context, message_text, keyboard)
+
+
+async def handle_basis_entry(update: Update, context: ContextTypes.DEFAULT_TYPE, value: float) -> None:
+    """Handle entry threshold selection"""
+    config = get_controller_config(context)
+    config["entry_threshold"] = float(value)
+    set_controller_config(context, config)
+    context.user_data["basis_wizard_step"] = "exit_threshold"
+    await _show_basis_exit_step(update, context)
+
+
+async def _show_basis_exit_step(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Basis wizard step 6: Exit threshold"""
+    config = get_controller_config(context)
+    entry = config.get("entry_threshold", 0.01)
+    context.user_data["bots_state"] = "basis_wizard_input"
+    context.user_data["basis_wizard_step"] = "exit_threshold"
+
+    keyboard = [
+        [
+            InlineKeyboardButton("0.1%", callback_data="bots:basis_exit:0.001"),
+            InlineKeyboardButton("0.2%", callback_data="bots:basis_exit:0.002"),
+            InlineKeyboardButton("0.5%", callback_data="bots:basis_exit:0.005"),
+        ],
+        [InlineKeyboardButton("❌ Cancel", callback_data="bots:main_menu")],
+    ]
+
+    message_text = (
+        r"*⚖️ Basis Trade \- New Config*" + "\n\n"
+        f"Entry: `{entry:.4%}`" + "\n\n"
+        r"*Step 6/6:* 📉 Exit Threshold" + "\n\n"
+        r"_Enter basis exit threshold \(smaller than entry\)_"
+    )
+    await _basis_edit_message(update, context, message_text, keyboard)
+
+
+async def handle_basis_exit(update: Update, context: ContextTypes.DEFAULT_TYPE, value: float) -> None:
+    """Handle exit threshold selection"""
+    config = get_controller_config(context)
+    config["exit_threshold"] = float(value)
+    set_controller_config(context, config)
+    context.user_data["basis_wizard_step"] = "review"
+    await _show_basis_review_step(update, context)
+
+
+async def _show_basis_review_step(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Basis wizard review step"""
+    config = get_controller_config(context)
+
+    if not config.get("id"):
+        existing = context.user_data.get("controller_configs_list", [])
+        config["id"] = basis_generate_id(config, existing)
+        set_controller_config(context, config)
+
+    spot = _basis_get_pair(config, "connector_pair_spot")
+    perp = _basis_get_pair(config, "connector_pair_perp")
+
+    config_block = (
+        f"id: {config.get('id', '')}\n"
+        "connector_pair_spot:\n"
+        f"  connector_name: {spot.get('connector_name', '')}\n"
+        f"  trading_pair: {spot.get('trading_pair', '')}\n"
+        "connector_pair_perp:\n"
+        f"  connector_name: {perp.get('connector_name', '')}\n"
+        f"  trading_pair: {perp.get('trading_pair', '')}\n"
+        f"entry_threshold: {config.get('entry_threshold', 0.01)}\n"
+        f"exit_threshold: {config.get('exit_threshold', 0.002)}\n"
+        f"tp_multiplier: {config.get('tp_multiplier', 2)}\n"
+        f"use_full_perp_balance: {_basis_format_value(config.get('use_full_perp_balance', True))}\n"
+        f"limit_spot_to_balance: {_basis_format_value(config.get('limit_spot_to_balance', True))}\n"
+        f"min_amount_quote: {config.get('min_amount_quote', 10)}\n"
+        f"pos_hedge_ratio: {config.get('pos_hedge_ratio', 1.0)}\n"
+        f"leverage: {config.get('leverage', 10)}\n"
+        f"position_mode: {config.get('position_mode', 'ONEWAY')}\n"
+        f"take_profit: {_basis_format_value(config.get('take_profit'))}\n"
+        f"stop_loss: {_basis_format_value(config.get('stop_loss'))}\n"
+        f"tp_global: {_basis_format_value(config.get('tp_global'))}\n"
+        f"sl_global: {_basis_format_value(config.get('sl_global'))}\n"
+        f"total_amount_quote: {config.get('total_amount_quote', 100)}\n"
+        f"min_gas_balance: {config.get('min_gas_balance', 0)}"
+    )
+
+    message_text = (
+        r"*⚖️ Basis Trade \- Review Config*" + "\n\n"
+        f"```\n{config_block}\n```\n\n"
+        r"_To edit, send `field: value` lines_" + "\n"
+        r"`spot_connector: dedust/router`" + "\n"
+        r"`perp_connector: hyperliquid_perpetual`" + "\n"
+        r"`entry_threshold: 1%`"
+    )
+
+    keyboard = [
+        [InlineKeyboardButton("✅ Save Config", callback_data="bots:basis_save")],
+        [InlineKeyboardButton("❌ Cancel", callback_data="bots:main_menu")],
+    ]
+
+    context.user_data["bots_state"] = "basis_wizard_input"
+    context.user_data["basis_wizard_step"] = "review"
+    await _basis_edit_message(update, context, message_text, keyboard)
+
+
+async def handle_basis_save(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Save basis trade config"""
+    query = update.callback_query
+    chat_id = update.effective_chat.id
+    config = get_controller_config(context)
+
+    is_valid, error = basis_validate_config(config)
+    if not is_valid:
+        keyboard = [[InlineKeyboardButton("⬅️ Back", callback_data="bots:basis_review_back")]]
+        await query.message.edit_text(
+            f"*Validation Error*\n\n{escape_markdown_v2(error or 'Unknown error')}",
+            parse_mode="MarkdownV2",
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
+        return
+
+    try:
+        client = await get_bots_client(chat_id)
+        config_id = config.get("id", "")
+        result = await client.controllers.create_or_update_controller_config(config_id, config)
+
+        if result.get("status") == "success" or "success" in str(result).lower():
+            keyboard = [
+                [InlineKeyboardButton("Create Another", callback_data="bots:new_basis_trade")],
+                [InlineKeyboardButton("Deploy Now", callback_data="bots:deploy_menu")],
+                [InlineKeyboardButton("Back to Menu", callback_data="bots:controller_configs")],
+            ]
+            await query.message.edit_text(
+                r"*✅ Config Saved\!*" + "\n\n"
+                f"*ID:* `{escape_markdown_v2(config.get('id', ''))}`",
+                parse_mode="MarkdownV2",
+                reply_markup=InlineKeyboardMarkup(keyboard)
+            )
+            clear_bots_state(context)
+        else:
+            error_msg = result.get("message", str(result))
+            keyboard = [[InlineKeyboardButton("⬅️ Back", callback_data="bots:basis_review_back")]]
+            await query.message.edit_text(
+                f"*Save Failed*\n\n{escape_markdown_v2(error_msg[:200])}",
+                parse_mode="MarkdownV2",
+                reply_markup=InlineKeyboardMarkup(keyboard)
+            )
+
+    except Exception as e:
+        logger.error(f"Error saving basis config: {e}", exc_info=True)
+        keyboard = [[InlineKeyboardButton("⬅️ Back", callback_data="bots:basis_review_back")]]
+        await query.message.edit_text(
+            f"*Error*\n\n{escape_markdown_v2(str(e)[:200])}",
+            parse_mode="MarkdownV2",
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
+
+
+async def handle_basis_review_back(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Back to review step"""
+    await _show_basis_review_step(update, context)
+
+
+async def process_basis_wizard_input(update: Update, context: ContextTypes.DEFAULT_TYPE, user_input: str) -> None:
+    """Process text input during Basis Trade wizard"""
+    step = context.user_data.get("basis_wizard_step", "")
+    config = get_controller_config(context)
+    message_id = context.user_data.get("basis_wizard_message_id")
+    chat_id = context.user_data.get("basis_wizard_chat_id")
+
+    try:
+        await update.message.delete()
+    except Exception:
+        pass
+
+    if step == "spot_connector":
+        spot = _basis_get_pair(config, "connector_pair_spot")
+        spot["connector_name"] = user_input.strip()
+        set_controller_config(context, config)
+        context.user_data["basis_wizard_step"] = "spot_pair"
+        await _show_basis_spot_pair_step(update, context)
+        return
+
+    if step == "spot_pair":
+        spot = _basis_get_pair(config, "connector_pair_spot")
+        spot["trading_pair"] = user_input.strip().upper()
+        set_controller_config(context, config)
+        context.user_data["basis_wizard_step"] = "perp_connector"
+        await _show_basis_perp_connector_step(update, context)
+        return
+
+    if step == "perp_connector":
+        perp = _basis_get_pair(config, "connector_pair_perp")
+        perp["connector_name"] = user_input.strip()
+        set_controller_config(context, config)
+        context.user_data["basis_wizard_step"] = "perp_pair"
+        await _show_basis_perp_pair_step(update, context)
+        return
+
+    if step == "perp_pair":
+        perp = _basis_get_pair(config, "connector_pair_perp")
+        perp["trading_pair"] = user_input.strip().upper()
+        set_controller_config(context, config)
+        context.user_data["basis_wizard_step"] = "entry_threshold"
+        await _show_basis_entry_step(update, context)
+        return
+
+    if step == "entry_threshold":
+        try:
+            config["entry_threshold"] = _basis_parse_threshold(user_input)
+        except ValueError:
+            await context.bot.send_message(
+                chat_id=chat_id,
+                text="❌ Invalid entry threshold. Use 0.01 or 1%",
+            )
+            return
+        set_controller_config(context, config)
+        context.user_data["basis_wizard_step"] = "exit_threshold"
+        await _show_basis_exit_step(update, context)
+        return
+
+    if step == "exit_threshold":
+        try:
+            config["exit_threshold"] = _basis_parse_threshold(user_input)
+        except ValueError:
+            await context.bot.send_message(
+                chat_id=chat_id,
+                text="❌ Invalid exit threshold. Use 0.002 or 0.2%",
+            )
+            return
+        set_controller_config(context, config)
+        context.user_data["basis_wizard_step"] = "review"
+        await _show_basis_review_step(update, context)
+        return
+
+    if step == "review":
+        updates = {}
+        for line in user_input.splitlines():
+            raw = line.strip()
+            if not raw or (":" not in raw and "=" not in raw):
+                continue
+            sep = ":" if ":" in raw else "="
+            key, _, value = raw.partition(sep)
+            key = key.strip().lower()
+            value = value.strip()
+            if not value:
+                continue
+            updates[key] = value
+
+        if not updates:
+            await context.bot.send_message(chat_id=chat_id, text="❌ No valid updates found.")
+            return
+
+        spot = _basis_get_pair(config, "connector_pair_spot")
+        perp = _basis_get_pair(config, "connector_pair_perp")
+
+        for key, value in updates.items():
+            if key in {"id"}:
+                config["id"] = value
+            elif key in {"spot_connector", "spot_connector_name"}:
+                spot["connector_name"] = value
+            elif key in {"spot_pair", "spot_trading_pair"}:
+                spot["trading_pair"] = value.upper()
+            elif key in {"perp_connector", "perp_connector_name"}:
+                perp["connector_name"] = value
+            elif key in {"perp_pair", "perp_trading_pair"}:
+                perp["trading_pair"] = value.upper()
+            elif key in {"entry_threshold"}:
+                config["entry_threshold"] = _basis_parse_threshold(value)
+            elif key in {"exit_threshold"}:
+                config["exit_threshold"] = _basis_parse_threshold(value)
+            elif key in {"tp_multiplier"}:
+                config["tp_multiplier"] = float(value)
+            elif key in {"leverage"}:
+                config["leverage"] = int(float(value))
+            elif key in {"pos_hedge_ratio"}:
+                config["pos_hedge_ratio"] = float(value)
+            elif key in {"min_amount_quote"}:
+                config["min_amount_quote"] = float(value)
+            elif key in {"total_amount_quote"}:
+                config["total_amount_quote"] = float(value)
+            elif key in {"min_gas_balance"}:
+                config["min_gas_balance"] = float(value)
+            elif key in {"use_full_perp_balance"}:
+                config["use_full_perp_balance"] = _basis_parse_bool(value)
+            elif key in {"limit_spot_to_balance"}:
+                config["limit_spot_to_balance"] = _basis_parse_bool(value)
+
+        set_controller_config(context, config)
+        await _show_basis_review_step(update, context)
+        return
+
+    if message_id and chat_id:
+        await context.bot.send_message(chat_id=chat_id, text="❌ Unsupported input for this step.")
