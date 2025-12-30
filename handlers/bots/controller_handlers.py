@@ -14,7 +14,6 @@ Provides:
 
 import asyncio
 import logging
-import os
 from typing import Dict, Any, List, Optional
 
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
@@ -3597,18 +3596,7 @@ async def handle_edit_config(update: Update, context: ContextTypes.DEFAULT_TYPE,
 # ============================================
 
 # Default deploy settings
-def _build_default_hbot_image() -> str:
-    image = os.environ.get("HBOT_IMAGE")
-    if image:
-        return image
-    registry = os.environ.get("HBOT_REGISTRY") or os.environ.get("REGISTRY", "")
-    tag = os.environ.get("HBOT_TAG") or os.environ.get("TAG", "latest")
-    if registry and not registry.endswith("/"):
-        registry = f"{registry}/"
-    return f"{registry}hummingbot-core:{tag}"
-
-
-DEFAULT_HBOT_IMAGE = _build_default_hbot_image()
+DEFAULT_HBOT_IMAGE = "stepandra/hummingbot-core:latest"
 
 
 # Default deploy settings
@@ -4129,7 +4117,7 @@ async def handle_deploy_set_field(update: Update, context: ContextTypes.DEFAULT_
         "credentials_profile": "e.g. binance_main",
         "max_global_drawdown_quote": "e.g. 1000 (in USDT)",
         "max_controller_drawdown_quote": "e.g. 500 (in USDT)",
-        "image": "e.g. hummingbot-core:latest",
+        "image": "e.g. stepandra/hummingbot-core:latest",
     }
 
     label = labels.get(field_name, field_name)
@@ -4319,7 +4307,6 @@ def _unique_images(images: List[str]) -> List[str]:
 
 AVAILABLE_IMAGES = _unique_images([
     DEFAULT_HBOT_IMAGE,
-    "hummingbot-core:latest",
     "hummingbot/hummingbot:latest",
     "hummingbot/hummingbot:development",
 ])
