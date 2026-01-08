@@ -6,6 +6,7 @@ Polls trade history and sends a Telegram message for each new fill.
 
 import logging
 from datetime import datetime
+from collections.abc import MutableMapping
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 from telegram import Update
@@ -27,8 +28,24 @@ def _job_name(chat_id: int) -> str:
 
 
 def _get_chat_state(context: ContextTypes.DEFAULT_TYPE, chat_id: int) -> Dict[str, Any]:
-    chat_data = context.application.chat_data.setdefault(chat_id, {})
-    return chat_data.setdefault(_ALERTS_KEY, {})
+    """Return a per-chat mutable state dict.
+
+    NOTE: In python-telegram-bot v20+, Application.chat_data is exposed as a
+    MappingProxyType (read-only). Mutations must go through Context.chat_data.
+    """
+
+    chat_data = getattr(context, "chat_data", None)
+    if isinstance(chat_data, MutableMapping):
+        return chat_data.setdefault(_ALERTS_KEY, {})
+
+    # Fallback for contexts without chat_data (should be rare). Keep state in bot_data.
+    bot_data = getattr(getattr(context, "application", None), "bot_data", None)
+    if isinstance(bot_data, MutableMapping):
+        all_chats = bot_data.setdefault(_ALERTS_KEY, {})
+        if isinstance(all_chats, MutableMapping):
+            return all_chats.setdefault(str(chat_id), {})
+
+    return {}
 
 
 def _normalize_list(value: Optional[Iterable[str]]) -> Optional[List[str]]:
