@@ -155,6 +155,7 @@ from .controller_handlers import (
     handle_basis_review_back,
     process_basis_wizard_input,
 )
+from .trade_alerts import handle_toggle_trade_alerts
 from ._shared import clear_bots_state, SIDE_LONG, SIDE_SHORT
 
 # Archived bots handlers
@@ -674,6 +675,12 @@ async def bots_callback_handler(update: Update, context: ContextTypes.DEFAULT_TY
         # View logs (uses context)
         elif main_action == "view_logs":
             await show_bot_logs(update, context)
+
+        elif main_action == "toggle_trade_alerts":
+            await handle_toggle_trade_alerts(update, context)
+            bot_name = context.user_data.get("current_bot_name")
+            if bot_name:
+                await show_bot_detail(update, context, bot_name)
 
         # Navigation
         elif main_action == "back_to_bot":

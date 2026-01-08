@@ -61,6 +61,7 @@ from handlers.cex._shared import (
     fetch_trading_rules,
     get_trading_rules,
 )
+from .trade_alerts import build_trade_filters, start_trade_alerts
 
 logger = logging.getLogger(__name__)
 
@@ -4256,12 +4257,25 @@ async def handle_execute_deploy(update: Update, context: ContextTypes.DEFAULT_TY
             "created" in message.lower()
         )
 
+        alerts_note = ""
         if is_success:
+            try:
+                configs = context.user_data.get("controller_configs_list", [])
+                filters = build_trade_filters(configs, controllers_config, credentials_profile)
+                started = await start_trade_alerts(context, chat_id, filters=filters)
+                if started:
+                    alerts_note = "\n🔔 Trade alerts enabled for this chat"
+                elif filters:
+                    alerts_note = "\n🔔 Trade alerts updated for this chat"
+            except Exception as e:
+                logger.warning(f"Trade alerts not started: {e}")
+
             await query.message.edit_text(
                 f"*Deployment Started\\!*\n\n"
                 f"*Instance:* `{escape_markdown_v2(instance_name)}`\n"
                 f"*Controllers:*\n{controllers_str}\n\n"
-                f"The bot is being deployed\\. Check status in Bots menu\\.",
+                f"The bot is being deployed\\. Check status in Bots menu\\."
+                f"{alerts_note}",
                 parse_mode="MarkdownV2",
                 reply_markup=reply_markup
             )

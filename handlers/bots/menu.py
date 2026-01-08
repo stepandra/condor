@@ -19,6 +19,7 @@ from telegram.ext import ContextTypes
 
 from utils.telegram_formatters import format_active_bots, format_error_message, escape_markdown_v2, format_number
 from ._shared import get_bots_client, clear_bots_state
+from .trade_alerts import is_trade_alerts_enabled
 
 logger = logging.getLogger(__name__)
 
@@ -360,9 +361,15 @@ async def show_bot_detail(update: Update, context: ContextTypes.DEFAULT_TYPE, bo
                 lines.append(f"  `{escape_markdown_v2(err_short)}`")
 
         # Bot-level actions
+        alerts_enabled = is_trade_alerts_enabled(context, chat_id)
+        alerts_label = "🔔 Alerts: ON" if alerts_enabled else "🔕 Alerts: OFF"
+
         keyboard.append([
             InlineKeyboardButton("📋 Logs", callback_data="bots:view_logs"),
             InlineKeyboardButton("🛑 Stop Bot", callback_data="bots:stop_bot"),
+        ])
+        keyboard.append([
+            InlineKeyboardButton(alerts_label, callback_data="bots:toggle_trade_alerts"),
         ])
 
         keyboard.append([

@@ -373,6 +373,7 @@ def reload_handlers():
         'handlers.portfolio',
         'handlers.bots',
         'handlers.bots.menu',
+        'handlers.bots.trade_alerts',
         'handlers.bots.controllers',
         'handlers.bots._shared',
         'handlers.cex',
